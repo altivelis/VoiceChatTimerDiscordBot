@@ -1,0 +1,37 @@
+{
+  "voiceTime": {
+    "455642861220659200": {
+      "totalTime": 3603797,
+      "sessions": [
+        {
+          "channelId": "1245626148508008488",
+          "startTime": 1753062606007,
+          "endTime": 1753062609227
+        },
+        {
+          "channelId": "1245626148508008488",
+          "startTime": 1753062646373,
+          "endTime": 1753062660170
+        }
+      ]
+    }
+  },
+  "roleRewards": [
+    {
+      "hours": 1,
+      "roleId": "1396668158449942618",
+      "roleName": "ブロンズ"
+    },
+    {
+      "hours": 2,
+      "roleId": "1396668300515082423",
+      "roleName": "シルバー"
+    },
+    {
+      "hours": 3,
+      "roleId": "1396668362934714428",
+      "roleName": "ゴールド"
+    }
+  ],
+  "afkChannels": []
+}
