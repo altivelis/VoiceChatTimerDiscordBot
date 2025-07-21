@@ -1,21 +1,5 @@
 {
   "voiceTime": {},
-  "roleRewards": [
-    {
-      "hours": 1,
-      "roleId": "1396668158449942618",
-      "roleName": "ブロンズ"
-    },
-    {
-      "hours": 2,
-      "roleId": "1396668300515082423",
-      "roleName": "シルバー"
-    },
-    {
-      "hours": 3,
-      "roleId": "1396668362934714428",
-      "roleName": "ゴールド"
-    }
-  ],
+  "roleRewards": [],
   "afkChannels": []
 }
