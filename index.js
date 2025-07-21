@@ -620,7 +620,17 @@ async function handleResetTimeCommand(interaction, data) {
         
         // データをリセット
         data.voiceTime = {};
-        userSessions.clear();
+        
+        // 現在ボイスチャットに参加しているユーザーのセッションをリセット
+        const currentTime = Date.now();
+        for (const [userId, session] of userSessions.entries()) {
+            // 現在時刻から新しいセッションを開始
+            userSessions.set(userId, {
+                startTime: currentTime,
+                channelId: session.channelId
+            });
+        }
+        
         saveData(data);
         
         await interaction.editReply(`✅ 通話時間リセットが完了しました。\n📊 処理したユーザー数: ${processedUsers}\n🎭 削除したロール数: ${removedRolesCount}`);
