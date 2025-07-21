@@ -590,11 +590,45 @@ async function handleResetTimeCommand(interaction, data) {
         return;
     }
     
-    data.voiceTime = {};
-    userSessions.clear();
-    saveData(data);
+    // 進行状況を表示
+    await interaction.reply('⏳ 通話時間をリセット中...');
     
-    await interaction.reply('✅ 全ユーザーの通話時間をリセットしました。');
+    try {
+        // すべてのユーザーからロール報酬を削除
+        let removedRolesCount = 0;
+        let processedUsers = 0;
+        
+        for (const [userId, userData] of Object.entries(data.voiceTime)) {
+            try {
+                const member = interaction.guild.members.cache.get(userId);
+                if (member) {
+                    // このユーザーから報酬ロールを削除
+                    for (const reward of data.roleRewards) {
+                        const role = interaction.guild.roles.cache.get(reward.roleId);
+                        if (role && member.roles.cache.has(reward.roleId)) {
+                            await member.roles.remove(role);
+                            removedRolesCount++;
+                            console.log(`${member.displayName}から${role.name}ロールを削除しました`);
+                        }
+                    }
+                }
+                processedUsers++;
+            } catch (error) {
+                console.error(`ユーザー ${userId} のロール削除エラー:`, error);
+            }
+        }
+        
+        // データをリセット
+        data.voiceTime = {};
+        userSessions.clear();
+        saveData(data);
+        
+        await interaction.editReply(`✅ 通話時間リセットが完了しました。\n📊 処理したユーザー数: ${processedUsers}\n🎭 削除したロール数: ${removedRolesCount}`);
+        
+    } catch (error) {
+        console.error('リセット処理エラー:', error);
+        await interaction.editReply('❌ リセット処理中にエラーが発生しました。');
+    }
 }
 
 // ボタンインタラクション処理

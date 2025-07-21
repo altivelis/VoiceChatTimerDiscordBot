@@ -1,21 +1,5 @@
 {
-  "voiceTime": {
-    "455642861220659200": {
-      "totalTime": 3603797,
-      "sessions": [
-        {
-          "channelId": "1245626148508008488",
-          "startTime": 1753062606007,
-          "endTime": 1753062609227
-        },
-        {
-          "channelId": "1245626148508008488",
-          "startTime": 1753062646373,
-          "endTime": 1753062660170
-        }
-      ]
-    }
-  },
+  "voiceTime": {},
   "roleRewards": [
     {
       "hours": 1,

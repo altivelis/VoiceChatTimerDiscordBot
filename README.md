@@ -54,7 +54,7 @@ npm start
 - `/my-time` - 自分の通話時間を表示
 
 ### データ管理
-- `/reset-time confirm` - 全ユーザーの通話時間をリセット
+- `/reset-time confirm` - 全ユーザーの通話時間をリセット（付与されたロールも削除）
 
 ## 使用例
 
