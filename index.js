@@ -27,7 +27,8 @@ function loadData() {
     return {
         voiceTime: {},
         roleRewards: [],
-        afkChannels: []
+        afkChannels: [],
+        scheduledResets: []
     };
 }
 
@@ -130,7 +131,41 @@ async function registerCommands() {
             .addStringOption(option =>
                 option.setName('confirm')
                     .setDescription('確認のため "confirm" と入力してください')
-                    .setRequired(true))
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('schedule-reset')
+            .setDescription('スケジュールされた通話時間リセットを管理します')
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('add')
+                    .setDescription('スケジュールされたリセットを追加')
+                    .addStringOption(option =>
+                        option.setName('datetime')
+                            .setDescription('実行日時 (YYYY-MM-DD HH:MM形式)')
+                            .setRequired(true))
+                    .addStringOption(option =>
+                        option.setName('recurring')
+                            .setDescription('繰り返し設定')
+                            .setRequired(false)
+                            .addChoices(
+                                { name: '繰り返しなし', value: 'none' },
+                                { name: '毎日', value: 'daily' },
+                                { name: '毎週', value: 'weekly' },
+                                { name: '毎月', value: 'monthly' }
+                            )))
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('list')
+                    .setDescription('スケジュールされたリセット一覧を表示'))
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('cancel')
+                    .setDescription('スケジュールされたリセットをキャンセル')
+                    .addStringOption(option =>
+                        option.setName('id')
+                            .setDescription('スケジュールID')
+                            .setRequired(true)))
     ];
 
     const rest = new REST({ version: '10' }).setToken(token);
@@ -348,6 +383,9 @@ async function handleSlashCommand(interaction) {
             break;
         case 'reset-time':
             await handleResetTimeCommand(interaction, data);
+            break;
+        case 'schedule-reset':
+            await handleScheduleResetCommand(interaction, data);
             break;
     }
 }
@@ -709,5 +747,323 @@ async function handleButtonInteraction(interaction) {
         await interaction.editReply(reply);
     }
 }
+
+// スケジュールリセットコマンド処理
+async function handleScheduleResetCommand(interaction, data) {
+    const subcommand = interaction.options.getSubcommand();
+
+    // 管理者権限チェック
+    if (!interaction.member.permissions.has('ADMINISTRATOR')) {
+        await interaction.reply({ content: '❌ このコマンドを使用するには管理者権限が必要です。', ephemeral: true });
+        return;
+    }
+
+    switch (subcommand) {
+        case 'add':
+            await handleScheduleAdd(interaction, data);
+            break;
+        case 'list':
+            await handleScheduleList(interaction, data);
+            break;
+        case 'cancel':
+            await handleScheduleCancel(interaction, data);
+            break;
+    }
+}
+
+// スケジュール追加処理
+async function handleScheduleAdd(interaction, data) {
+    const datetimeStr = interaction.options.getString('datetime');
+    const recurring = interaction.options.getString('recurring') || 'none';
+
+    // 日時フォーマットバリデーション
+    const dateRegex = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/;
+    const match = datetimeStr.match(dateRegex);
+    
+    if (!match) {
+        await interaction.reply({ 
+            content: '❌ 日時の形式が正しくありません。YYYY-MM-DD HH:MM形式で入力してください。\n例: 2025-08-03 02:00', 
+            ephemeral: true 
+        });
+        return;
+    }
+
+    // 日時パース
+    const [, year, month, day, hour, minute] = match;
+    const scheduledDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute));
+    
+    // 過去日時チェック
+    if (scheduledDate <= new Date()) {
+        await interaction.reply({ 
+            content: '❌ 過去の日時は指定できません。未来の日時を指定してください。', 
+            ephemeral: true 
+        });
+        return;
+    }
+
+    // スケジュールID生成
+    const scheduleId = `reset_${scheduledDate.getTime()}_${Date.now()}`;
+    
+    // スケジュールデータ作成
+    const schedule = {
+        id: scheduleId,
+        originalDatetime: datetimeStr,
+        nextExecution: scheduledDate.getTime(),
+        recurring: recurring,
+        createdBy: interaction.user.id,
+        guildId: interaction.guild.id,
+        createdAt: Date.now(),
+        active: true,
+        executionCount: 0
+    };
+
+    data.scheduledResets.push(schedule);
+    saveData(data);
+
+    // タイマーを設定
+    setupScheduleTimer(schedule, interaction.guild);
+
+    const recurringText = recurring === 'none' ? '繰り返しなし' : 
+                         recurring === 'daily' ? '毎日' :
+                         recurring === 'weekly' ? '毎週' :
+                         recurring === 'monthly' ? '毎月' : recurring;
+
+    const embed = new EmbedBuilder()
+        .setTitle('⏰ スケジュールリセットを追加しました')
+        .addFields(
+            { name: 'スケジュールID', value: scheduleId, inline: false },
+            { name: '実行日時', value: datetimeStr, inline: true },
+            { name: '繰り返し', value: recurringText, inline: true },
+            { name: '次回実行', value: `<t:${Math.floor(scheduledDate.getTime() / 1000)}:F>`, inline: false }
+        )
+        .setColor(0x00AE86)
+        .setTimestamp();
+
+    await interaction.reply({ embeds: [embed] });
+}
+
+// スケジュール一覧表示
+async function handleScheduleList(interaction, data) {
+    const guildSchedules = data.scheduledResets.filter(s => s.guildId === interaction.guild.id && s.active);
+    
+    if (guildSchedules.length === 0) {
+        await interaction.reply('📋 スケジュールされたリセットはありません。');
+        return;
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('📅 スケジュールされたリセット一覧')
+        .setColor(0x00AE86);
+
+    guildSchedules.forEach((schedule, index) => {
+        const recurringText = schedule.recurring === 'none' ? '繰り返しなし' : 
+                             schedule.recurring === 'daily' ? '毎日' :
+                             schedule.recurring === 'weekly' ? '毎週' :
+                             schedule.recurring === 'monthly' ? '毎月' : schedule.recurring;
+
+        embed.addFields({
+            name: `${index + 1}. ${schedule.id}`,
+            value: `**日時:** ${schedule.originalDatetime}\n**繰り返し:** ${recurringText}\n**次回実行:** <t:${Math.floor(schedule.nextExecution / 1000)}:F>\n**実行回数:** ${schedule.executionCount}回`,
+            inline: false
+        });
+    });
+
+    await interaction.reply({ embeds: [embed] });
+}
+
+// スケジュールキャンセル
+async function handleScheduleCancel(interaction, data) {
+    const scheduleId = interaction.options.getString('id');
+    const scheduleIndex = data.scheduledResets.findIndex(s => s.id === scheduleId && s.guildId === interaction.guild.id);
+    
+    if (scheduleIndex === -1) {
+        await interaction.reply({ content: '❌ 指定されたスケジュールIDが見つかりません。', ephemeral: true });
+        return;
+    }
+
+    const schedule = data.scheduledResets[scheduleIndex];
+    schedule.active = false;
+    
+    // タイマーをクリア
+    if (activeTimers.has(scheduleId)) {
+        clearTimeout(activeTimers.get(scheduleId));
+        activeTimers.delete(scheduleId);
+    }
+
+    saveData(data);
+
+    await interaction.reply(`✅ スケジュール \`${scheduleId}\` をキャンセルしました。`);
+}
+
+// アクティブなタイマーを管理
+const activeTimers = new Map();
+
+// スケジュールタイマー設定
+function setupScheduleTimer(schedule, guild) {
+    const now = Date.now();
+    const delay = schedule.nextExecution - now;
+
+    if (delay <= 0) {
+        // 即座に実行
+        executeScheduledReset(schedule, guild);
+        return;
+    }
+
+    const timerId = setTimeout(() => {
+        executeScheduledReset(schedule, guild);
+    }, delay);
+
+    activeTimers.set(schedule.id, timerId);
+    console.log(`スケジュール ${schedule.id} のタイマーを設定しました (${delay}ms後に実行)`);
+}
+
+// スケジュールされたリセット実行
+async function executeScheduledReset(schedule, guild) {
+    try {
+        console.log(`スケジュールリセットを実行中: ${schedule.id}`);
+        
+        const data = loadData();
+        
+        // 管理チャンネル通知
+        const notificationChannel = guild.channels.cache.find(channel => 
+            channel.name.includes('管理') || channel.name.includes('log') || channel.name.includes('通知')
+        ) || guild.systemChannel;
+
+        if (notificationChannel) {
+            const embed = new EmbedBuilder()
+                .setTitle('🔄 スケジュールリセット実行中')
+                .setDescription(`スケジュール \`${schedule.id}\` による自動リセットを実行しています...`)
+                .setColor(0xFF6B6B)
+                .setTimestamp();
+            
+            await notificationChannel.send({ embeds: [embed] });
+        }
+
+        // リセット実行（既存のリセット処理を流用）
+        let removedRolesCount = 0;
+        let processedUsers = 0;
+        
+        for (const [userId, userData] of Object.entries(data.voiceTime)) {
+            try {
+                const member = guild.members.cache.get(userId);
+                if (member) {
+                    for (const reward of data.roleRewards) {
+                        const role = guild.roles.cache.get(reward.roleId);
+                        if (role && member.roles.cache.has(reward.roleId)) {
+                            await member.roles.remove(role);
+                            removedRolesCount++;
+                        }
+                    }
+                }
+                processedUsers++;
+            } catch (error) {
+                console.error(`ユーザー ${userId} のロール削除エラー:`, error);
+            }
+        }
+        
+        // データリセット
+        data.voiceTime = {};
+        
+        // 現在のセッションをリセット
+        const currentTime = Date.now();
+        for (const [userId, session] of userSessions.entries()) {
+            userSessions.set(userId, {
+                startTime: currentTime,
+                channelId: session.channelId
+            });
+        }
+
+        // 実行回数更新
+        schedule.executionCount++;
+
+        // 次回実行日時を計算（定期実行の場合）
+        if (schedule.recurring !== 'none') {
+            calculateNextExecution(schedule);
+            setupScheduleTimer(schedule, guild);
+        } else {
+            schedule.active = false;
+        }
+
+        saveData(data);
+
+        // 完了通知
+        if (notificationChannel) {
+            const completionEmbed = new EmbedBuilder()
+                .setTitle('✅ スケジュールリセット完了')
+                .setDescription(`スケジュール \`${schedule.id}\` によるリセットが完了しました。`)
+                .addFields(
+                    { name: '処理したユーザー数', value: `${processedUsers}人`, inline: true },
+                    { name: '削除したロール数', value: `${removedRolesCount}個`, inline: true },
+                    { name: '実行回数', value: `${schedule.executionCount}回目`, inline: true }
+                )
+                .setColor(0x00FF00)
+                .setTimestamp();
+
+            if (schedule.recurring !== 'none' && schedule.active) {
+                completionEmbed.addFields({
+                    name: '次回実行予定',
+                    value: `<t:${Math.floor(schedule.nextExecution / 1000)}:F>`,
+                    inline: false
+                });
+            }
+            
+            await notificationChannel.send({ embeds: [completionEmbed] });
+        }
+
+        console.log(`スケジュールリセット完了: ${schedule.id}`);
+        
+    } catch (error) {
+        console.error(`スケジュールリセットエラー (${schedule.id}):`, error);
+    }
+}
+
+// 次回実行日時計算
+function calculateNextExecution(schedule) {
+    const current = new Date(schedule.nextExecution);
+    
+    switch (schedule.recurring) {
+        case 'daily':
+            current.setDate(current.getDate() + 1);
+            break;
+        case 'weekly':
+            current.setDate(current.getDate() + 7);
+            break;
+        case 'monthly':
+            current.setMonth(current.getMonth() + 1);
+            break;
+    }
+    
+    schedule.nextExecution = current.getTime();
+}
+
+// ボット起動時にスケジュールを復旧
+function restoreSchedules() {
+    const data = loadData();
+    const now = Date.now();
+    
+    for (const schedule of data.scheduledResets) {
+        if (schedule.active && schedule.nextExecution > now) {
+            const guild = client.guilds.cache.get(schedule.guildId);
+            if (guild) {
+                setupScheduleTimer(schedule, guild);
+            }
+        }
+    }
+    
+    console.log(`${data.scheduledResets.filter(s => s.active).length}個のスケジュールを復旧しました`);
+}
+
+// ボット準備完了時にスケジュール復旧を実行
+client.once(Events.ClientReady, async () => {
+    console.log("Ready!");
+    
+    // スラッシュコマンドを登録
+    await registerCommands();
+    
+    // スケジュールを復旧
+    setTimeout(() => {
+        restoreSchedules();
+    }, 3000); // 3秒後に実行（ギルドキャッシュの準備を待つ）
+});
 
 client.login(token);
