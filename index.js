@@ -28,7 +28,8 @@ function loadData() {
         voiceTime: {},
         roleRewards: [],
         afkChannels: [],
-        scheduledResets: []
+        scheduledResets: [],
+        rankingSettings: {}
     };
 }
 
@@ -46,6 +47,137 @@ function formatTime(milliseconds) {
     const hours = Math.floor(milliseconds / (1000 * 60 * 60));
     const minutes = Math.floor((milliseconds % (1000 * 60 * 60)) / (1000 * 60));
     return `${hours}時間${minutes}分`;
+}
+
+// 共通ランキング生成関数
+function generateRankingData(guild, data) {
+    const rankings = [];
+    
+    // 現在のセッション時間も含めて計算
+    for (const [userId, userData] of Object.entries(data.voiceTime)) {
+        const member = guild.members.cache.get(userId);
+        if (member && userData.totalTime > 0) {
+            let totalTime = userData.totalTime;
+            
+            // 現在のセッション時間を加算
+            if (userSessions.has(userId)) {
+                const session = userSessions.get(userId);
+                totalTime += Date.now() - session.startTime;
+            }
+            
+            rankings.push({
+                userId,
+                displayName: member.displayName,
+                totalTime: totalTime
+            });
+        }
+    }
+    
+    // 時間順にソート
+    rankings.sort((a, b) => b.totalTime - a.totalTime);
+    
+    return rankings;
+}
+
+// リセット前ランキング表示関数
+async function displayPreResetRanking(guild, data, resetType = 'manual', targetChannel = null) {
+    try {
+        const rankings = generateRankingData(guild, data);
+        
+        if (rankings.length === 0) {
+            console.log('ランキングデータが空のため、リセット前ランキングの表示をスキップしました');
+            return;
+        }
+        
+        // 投稿先チャンネルを決定
+        let channel = targetChannel;
+        if (!channel) {
+            // ランキング設定からチャンネルを取得
+            const guildSettings = data.rankingSettings[guild.id];
+            if (guildSettings && guildSettings.channelId) {
+                channel = guild.channels.cache.get(guildSettings.channelId);
+            }
+            
+            // 設定されていない場合はデフォルトチャンネルを使用
+            if (!channel) {
+                channel = guild.channels.cache.find(ch => 
+                    ch.name.includes('管理') || ch.name.includes('log') || ch.name.includes('通知')
+                ) || guild.systemChannel;
+            }
+        }
+        
+        if (!channel) {
+            console.log('ランキング投稿先チャンネルが見つかりませんでした');
+            return;
+        }
+        
+        // 設定を取得
+        const settings = data.rankingSettings[guild.id] || {};
+        const showOnReset = settings.showOnReset !== false; // デフォルトはtrue
+        const showTopCount = settings.showTopCount || 10;
+        
+        if (!showOnReset) {
+            console.log('リセット時ランキング表示が無効化されています');
+            return;
+        }
+        
+        // 表示するランキングを制限
+        const displayRankings = rankings.slice(0, showTopCount);
+        
+        // 統計情報を計算
+        const totalUsers = rankings.length;
+        const totalTime = rankings.reduce((sum, user) => sum + user.totalTime, 0);
+        
+        // ランキング説明文を作成
+        const description = displayRankings
+            .map((user, index) => {
+                const rank = index + 1;
+                let rankEmoji = '';
+                if (rank === 1) rankEmoji = '🥇';
+                else if (rank === 2) rankEmoji = '🥈';
+                else if (rank === 3) rankEmoji = '🥉';
+                else rankEmoji = `   `;
+                
+                return `${rankEmoji} **${rank}位** ${user.displayName} - ${formatTime(user.totalTime)}`;
+            })
+            .join('\n');
+        
+        // 現在の日時を取得
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('ja-JP', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+        
+        const resetTypeText = resetType === 'manual' ? '手動リセット' : 'スケジュールリセット';
+        
+        const embed = new EmbedBuilder()
+            .setTitle('🏆 【リセット前 最終ランキング】')
+            .setDescription(`📅 **リセット日時:** ${dateStr}\n🔄 **実行方法:** ${resetTypeText}\n\n${description}`)
+            .addFields(
+                { name: '📊 統計情報', value: `**総参加者数:** ${totalUsers}人\n**総通話時間:** ${formatTime(totalTime)}`, inline: false }
+            )
+            .setColor(0xFFD700)
+            .setThumbnail(guild.iconURL())
+            .setTimestamp()
+            .setFooter({ text: `${guild.name} | 通話時間記録`, iconURL: guild.iconURL() });
+        
+        // もしランキングが多い場合は追加情報を表示
+        if (rankings.length > showTopCount) {
+            embed.addFields({
+                name: '📋 表示情報',
+                value: `上位${showTopCount}位まで表示（全${totalUsers}人中）`,
+                inline: true
+            });
+        }
+        
+        await channel.send({ embeds: [embed] });
+        console.log(`リセット前ランキングを ${channel.name} に投稿しました`);
+        
+    } catch (error) {
+        console.error('リセット前ランキング表示エラー:', error);
+    }
 }
 
 // ユーザーのセッション管理
@@ -632,6 +764,9 @@ async function handleResetTimeCommand(interaction, data) {
     await interaction.reply('⏳ 通話時間をリセット中...');
     
     try {
+        // リセット前ランキングを表示
+        await displayPreResetRanking(interaction.guild, data, 'manual', interaction.channel);
+        
         // すべてのユーザーからロール報酬を削除
         let removedRolesCount = 0;
         let processedUsers = 0;
@@ -938,6 +1073,9 @@ async function executeScheduledReset(schedule, guild) {
             
             await notificationChannel.send({ embeds: [embed] });
         }
+
+        // リセット前ランキングを表示
+        await displayPreResetRanking(guild, data, 'scheduled');
 
         // リセット実行（既存のリセット処理を流用）
         let removedRolesCount = 0;
