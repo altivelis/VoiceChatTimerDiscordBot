@@ -1,5 +1,7 @@
 {
   "voiceTime": {},
   "roleRewards": [],
-  "afkChannels": []
+  "afkChannels": [],
+  "scheduledResets": [],
+  "rankingSettings": {}
 }
