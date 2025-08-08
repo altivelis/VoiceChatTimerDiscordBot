@@ -164,12 +164,20 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
         const currentTime = Date.now();
         
         // AFKチャンネルかどうかをチェックする関数
-        const isAfkChannel = (channelId) => {
-            if (!channelId) return false;
-            const afkChannels = db.getAFKChannels(guildId);
-            return afkChannels.includes(channelId) || 
-                   newState.guild.afkChannel?.id === channelId ||
-                   oldState.guild.afkChannel?.id === channelId;
+        const isAfkChannel = (channelId, callback) => {
+            if (!channelId) return callback(false);
+            
+            db.getAFKChannels(guildId, (err, afkChannels) => {
+                if (err) {
+                    console.error('AFKチャンネル取得エラー:', err);
+                    return callback(false);
+                }
+                
+                const isAfk = afkChannels.includes(channelId) || 
+                             newState.guild.afkChannel?.id === channelId ||
+                             oldState.guild.afkChannel?.id === channelId;
+                callback(isAfk);
+            });
         };
         
         // ボイスチャンネル入室
