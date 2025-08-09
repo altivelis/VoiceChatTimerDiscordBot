@@ -92,6 +92,31 @@ npm install
 npm start
 ```
 
+### 💡 現在の実行方法（sqlite3版）
+
+**✅ 依存関係確認**
+```bash
+# 現在のパッケージ確認
+npm list sqlite3
+# sqlite3@5.1.6 が表示されればOK
+```
+
+**🚀 Bot起動**
+```bash
+npm start
+```
+
+**🛠️ トラブルシューティング**
+- エラーが発生した場合: `npm install` を再実行
+- データベースファイル: `voice_timer.db` が自動作成されます
+- ログ確認: コンソールで接続状況を確認
+
+**📊 データ移行（既存ユーザー）**
+```bash
+# 既存のdata.jsonがある場合のみ
+node migrate.js
+```
+
 ## スラッシュコマンド
 
 ### ロール報酬管理

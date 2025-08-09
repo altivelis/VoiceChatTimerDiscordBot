@@ -116,7 +116,41 @@ async function registerCommands() {
             .addStringOption(option =>
                 option.setName('confirm')
                     .setDescription('確認のため "confirm" と入力してください')
-                    .setRequired(true))
+                    .setRequired(true)),
+        
+        new SlashCommandBuilder()
+            .setName('schedule-reset')
+            .setDescription('このサーバーのスケジュールリセットを管理します')
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('add')
+                    .setDescription('スケジュールリセットを追加（日本時間）')
+                    .addStringOption(option =>
+                        option.setName('datetime')
+                            .setDescription('実行日時 (YYYY-MM-DD HH:MM形式、日本時間)')
+                            .setRequired(true))
+                    .addStringOption(option =>
+                        option.setName('recurring')
+                            .setDescription('繰り返し設定')
+                            .setRequired(false)
+                            .addChoices(
+                                { name: '繰り返しなし', value: 'none' },
+                                { name: '毎日', value: 'daily' },
+                                { name: '毎週', value: 'weekly' },
+                                { name: '毎月', value: 'monthly' }
+                            )))
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('list')
+                    .setDescription('このサーバーのスケジュールリセット一覧を表示'))
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('cancel')
+                    .setDescription('スケジュールリセットをキャンセル')
+                    .addStringOption(option =>
+                        option.setName('id')
+                            .setDescription('スケジュールID')
+                            .setRequired(true)))
     ];
 
     const rest = new REST({ version: '10' }).setToken(token);
@@ -336,6 +370,9 @@ async function handleSlashCommand(interaction) {
             break;
         case 'reset-time':
             await handleResetTimeCommand(interaction, guildId);
+            break;
+        case 'schedule-reset':
+            await handleScheduleResetCommand(interaction, guildId);
             break;
     }
 }
@@ -583,6 +620,333 @@ async function handleMyTimeCommand(interaction, guildId) {
     });
 }
 
+// スケジュールリセットコマンド処理
+async function handleScheduleResetCommand(interaction, guildId) {
+    const subcommand = interaction.options.getSubcommand();
+
+    // 管理者権限チェック
+    if (!interaction.member.permissions.has('ADMINISTRATOR')) {
+        await interaction.reply({ content: '❌ このコマンドを使用するには管理者権限が必要です。', ephemeral: true });
+        return;
+    }
+
+    switch (subcommand) {
+        case 'add':
+            await handleScheduleResetAdd(interaction, guildId);
+            break;
+        case 'list':
+            await handleScheduleResetList(interaction, guildId);
+            break;
+        case 'cancel':
+            await handleScheduleResetCancel(interaction, guildId);
+            break;
+    }
+}
+
+// スケジュールリセット追加
+async function handleScheduleResetAdd(interaction, guildId) {
+    const datetimeStr = interaction.options.getString('datetime');
+    const recurring = interaction.options.getString('recurring') || 'none';
+
+    // 日時フォーマット検証
+    if (!isValidJSTDateTime(datetimeStr)) {
+        await interaction.reply({ 
+            content: '❌ 無効な日時フォーマットです。\n正しい形式: `YYYY-MM-DD HH:MM` (例: `2025-08-10 15:30`)\n※未来の日時を指定してください。', 
+            ephemeral: true 
+        });
+        return;
+    }
+
+    try {
+        const nextExecution = parseJSTDateTime(datetimeStr);
+        const scheduleId = `${guildId}_${Date.now()}`;
+
+        const scheduleData = {
+            id: scheduleId,
+            guildId: guildId,
+            originalDatetime: datetimeStr,
+            nextExecution: nextExecution,
+            recurring: recurring,
+            createdBy: interaction.user.id,
+            active: true,
+            executionCount: 0
+        };
+
+        db.addScheduledReset(scheduleData, (err) => {
+            if (err) {
+                console.error('スケジュール追加エラー:', err);
+                interaction.reply({ content: '❌ スケジュールの追加に失敗しました。', ephemeral: true });
+                return;
+            }
+
+            // タイマーを設定
+            setResetTimer(scheduleData);
+
+            const recurringText = recurring === 'none' ? '一回限り' : 
+                                recurring === 'daily' ? '毎日' :
+                                recurring === 'weekly' ? '毎週' :
+                                recurring === 'monthly' ? '毎月' : recurring;
+
+            const embed = new EmbedBuilder()
+                .setTitle('⏰ スケジュールリセットを追加しました')
+                .addFields(
+                    { name: '実行日時', value: `${toDiscordTimestamp(nextExecution)} (JST)`, inline: true },
+                    { name: '繰り返し', value: recurringText, inline: true },
+                    { name: 'スケジュールID', value: scheduleId, inline: false }
+                )
+                .setColor(0x00AE86)
+                .setFooter({ text: `作成者: ${interaction.user.tag}` });
+
+            interaction.reply({ embeds: [embed] });
+        });
+
+    } catch (error) {
+        console.error('スケジュール追加処理エラー:', error);
+        await interaction.reply({ content: '❌ 日時の処理でエラーが発生しました。', ephemeral: true });
+    }
+}
+
+// スケジュールリセット一覧
+async function handleScheduleResetList(interaction, guildId) {
+    db.getScheduledResets(guildId, true, async (err, schedules) => {
+        if (err || !schedules || schedules.length === 0) {
+            await interaction.reply('このサーバーにはアクティブなスケジュールリセットがありません。');
+            return;
+        }
+
+        const now = Date.now();
+        const description = schedules
+            .map(schedule => {
+                const timeUntil = schedule.next_execution - now;
+                const timeText = timeUntil > 0 ? `残り${formatTime(timeUntil)}` : '実行待ち';
+                
+                const recurringText = schedule.recurring === 'none' ? '一回限り' : 
+                                    schedule.recurring === 'daily' ? '毎日' :
+                                    schedule.recurring === 'weekly' ? '毎週' :
+                                    schedule.recurring === 'monthly' ? '毎月' : schedule.recurring;
+
+                return `**ID:** \`${schedule.id}\`\n**実行日時:** ${toDiscordTimestamp(schedule.next_execution)}\n**繰り返し:** ${recurringText}\n**状態:** ${timeText}\n**実行回数:** ${schedule.execution_count}回\n`;
+            })
+            .join('\n');
+
+        const embed = new EmbedBuilder()
+            .setTitle(`⏰ ${interaction.guild.name} のスケジュールリセット一覧`)
+            .setDescription(description)
+            .setColor(0x00AE86)
+            .setFooter({ text: `${formatJSTDate()} JST` });
+
+        await interaction.reply({ embeds: [embed] });
+    });
+}
+
+// スケジュールリセットキャンセル
+async function handleScheduleResetCancel(interaction, guildId) {
+    const scheduleId = interaction.options.getString('id');
+
+    db.deleteScheduledReset(scheduleId, (err) => {
+        if (err) {
+            interaction.reply({ content: '❌ スケジュールのキャンセルに失敗しました。', ephemeral: true });
+            return;
+        }
+
+        // タイマーも削除
+        clearResetTimer(scheduleId);
+
+        interaction.reply(`✅ スケジュールリセット \`${scheduleId}\` をキャンセルしました。`);
+    });
+}
+
+// リセットタイマー設定
+function setResetTimer(scheduleData) {
+    const now = Date.now();
+    const delay = scheduleData.nextExecution - now;
+
+    if (delay <= 0) {
+        // 即座に実行
+        executeScheduledReset(scheduleData);
+        return;
+    }
+
+    // JavaScriptのsetTimeoutは最大約24.8日の制限があるため、それを超える場合は分割
+    const maxDelay = 2147483647; // 約24.8日
+    const actualDelay = Math.min(delay, maxDelay);
+
+    const timer = setTimeout(() => {
+        if (delay > maxDelay) {
+            // まだ実行時間でない場合は再設定
+            const newScheduleData = {
+                ...scheduleData,
+                nextExecution: scheduleData.nextExecution
+            };
+            setResetTimer(newScheduleData);
+        } else {
+            // 実行時間になった
+            executeScheduledReset(scheduleData);
+        }
+    }, actualDelay);
+
+    activeTimers.set(scheduleData.id, timer);
+    console.log(`スケジュール ${scheduleData.id} のタイマーを設定しました (${formatTime(delay)}後)`);
+}
+
+// リセットタイマークリア
+function clearResetTimer(scheduleId) {
+    if (activeTimers.has(scheduleId)) {
+        clearTimeout(activeTimers.get(scheduleId));
+        activeTimers.delete(scheduleId);
+        console.log(`スケジュール ${scheduleId} のタイマーをクリアしました`);
+    }
+}
+
+// スケジュールリセット実行
+async function executeScheduledReset(scheduleData) {
+    try {
+        const guild = client.guilds.cache.get(scheduleData.guildId);
+        if (!guild) {
+            console.error(`ギルド ${scheduleData.guildId} が見つかりません`);
+            return;
+        }
+
+        console.log(`スケジュールリセットを実行中: ${scheduleData.id} (${guild.name})`);
+
+        // リセット前のランキングを保存・表示
+        await showFinalRanking(guild, scheduleData);
+
+        // データリセット実行
+        db.resetGuildData(scheduleData.guildId, () => {
+            // 現在のセッションもリセット
+            const currentTime = Date.now();
+            for (const [sessionKey, session] of userSessions.entries()) {
+                if (session.guildId === scheduleData.guildId) {
+                    userSessions.set(sessionKey, {
+                        startTime: currentTime,
+                        channelId: session.channelId,
+                        guildId: session.guildId
+                    });
+                }
+            }
+
+            console.log(`${guild.name} のスケジュールリセットが完了しました`);
+        });
+
+        // 次回実行の設定（定期実行の場合）
+        if (scheduleData.recurring !== 'none') {
+            const nextExecution = calculateNextExecution(scheduleData.originalDatetime, scheduleData.recurring);
+            const updatedSchedule = {
+                ...scheduleData,
+                nextExecution: nextExecution,
+                executionCount: scheduleData.executionCount + 1
+            };
+
+            db.updateScheduledReset(scheduleData.id, {
+                next_execution: nextExecution,
+                execution_count: scheduleData.executionCount + 1
+            }, (err) => {
+                if (!err) {
+                    setResetTimer(updatedSchedule);
+                }
+            });
+        } else {
+            // 一回限りの場合は無効化
+            db.updateScheduledReset(scheduleData.id, { active: 0 });
+        }
+
+    } catch (error) {
+        console.error('スケジュールリセット実行エラー:', error);
+    }
+}
+
+// 次回実行日時計算
+function calculateNextExecution(originalDatetime, recurring) {
+    const [datePart, timePart] = originalDatetime.split(' ');
+    const [year, month, day] = datePart.split('-').map(Number);
+    const [hour, minute] = timePart.split(':').map(Number);
+
+    const now = new Date();
+    const nextDate = new Date(year, month - 1, day, hour, minute);
+
+    switch (recurring) {
+        case 'daily':
+            nextDate.setDate(nextDate.getDate() + 1);
+            while (nextDate <= now) {
+                nextDate.setDate(nextDate.getDate() + 1);
+            }
+            break;
+        case 'weekly':
+            nextDate.setDate(nextDate.getDate() + 7);
+            while (nextDate <= now) {
+                nextDate.setDate(nextDate.getDate() + 7);
+            }
+            break;
+        case 'monthly':
+            nextDate.setMonth(nextDate.getMonth() + 1);
+            while (nextDate <= now) {
+                nextDate.setMonth(nextDate.getMonth() + 1);
+            }
+            break;
+    }
+
+    // UTC時間に変換（-9時間）
+    return nextDate.getTime() - (9 * 60 * 60 * 1000);
+}
+
+// リセット前最終ランキング表示
+async function showFinalRanking(guild, scheduleData) {
+    try {
+        db.getGuildRanking(scheduleData.guildId, 10, 0, async (err, rankings) => {
+            if (err || !rankings || rankings.length === 0) {
+                return; // ランキングデータがない場合は何もしない
+            }
+
+            const enrichedRankings = rankings.map(ranking => {
+                const sessionKey = `${scheduleData.guildId}_${ranking.user_id}`;
+                let totalTime = ranking.total_time;
+                
+                if (userSessions.has(sessionKey)) {
+                    const session = userSessions.get(sessionKey);
+                    totalTime += Date.now() - session.startTime;
+                }
+                
+                const member = guild.members.cache.get(ranking.user_id);
+                return {
+                    userId: ranking.user_id,
+                    displayName: member?.displayName || '不明なユーザー',
+                    totalTime: totalTime
+                };
+            });
+
+            enrichedRankings.sort((a, b) => b.totalTime - a.totalTime);
+
+            const description = enrichedRankings
+                .map((user, index) => {
+                    const rank = index + 1;
+                    let rankEmoji = '';
+                    if (rank === 1) rankEmoji = '🥇';
+                    else if (rank === 2) rankEmoji = '🥈';
+                    else if (rank === 3) rankEmoji = '🥉';
+                    else rankEmoji = '   ';
+                    
+                    return `${rankEmoji} **${rank}位** ${user.displayName} - ${formatTime(user.totalTime)}`;
+                })
+                .join('\n');
+
+            const embed = new EmbedBuilder()
+                .setTitle(`🏆 ${guild.name} 最終ランキング（リセット前）`)
+                .setDescription(description)
+                .setColor(0xFFD700)
+                .setFooter({ text: `リセット実行: ${formatJSTDate()} JST` });
+
+            // 一般チャンネル（最初に見つかるテキストチャンネル）に投稿
+            const channel = guild.channels.cache.find(ch => ch.isTextBased() && ch.permissionsFor(guild.members.me).has('SendMessages'));
+            if (channel) {
+                await channel.send({ embeds: [embed] });
+            }
+        });
+    } catch (error) {
+        console.error('最終ランキング表示エラー:', error);
+    }
+}
+
 // リセットコマンド処理
 async function handleResetTimeCommand(interaction, guildId) {
     const confirm = interaction.options.getString('confirm');
@@ -766,6 +1130,9 @@ client.once(Events.ClientReady, async () => {
         updateAFKChannelCache(guild.id);
     });
     
+    // スケジュールリセットの復旧
+    await restoreScheduledResets();
+    
     console.log('Botの準備が完了しました！');
 });
 
@@ -781,5 +1148,80 @@ process.on('SIGTERM', () => {
     db.close();
     process.exit(0);
 });
+
+// スケジュールリセット復旧関数
+async function restoreScheduledResets() {
+    try {
+        console.log('スケジュールリセットを復旧中...');
+        
+        // 全ギルドのアクティブなスケジュールを取得
+        for (const guild of client.guilds.cache.values()) {
+            db.getScheduledResets(guild.id, true, (err, schedules) => {
+                if (err || !schedules || schedules.length === 0) {
+                    return;
+                }
+                
+                const now = Date.now();
+                let restoredCount = 0;
+                
+                for (const schedule of schedules) {
+                    // 過去のスケジュールは実行済みとして処理
+                    if (schedule.next_execution <= now) {
+                        if (schedule.recurring !== 'none') {
+                            // 定期実行の場合は次回実行日時を計算
+                            const nextExecution = calculateNextExecution(schedule.original_datetime, schedule.recurring);
+                            const updatedSchedule = {
+                                id: schedule.id,
+                                guildId: schedule.guild_id,
+                                originalDatetime: schedule.original_datetime,
+                                nextExecution: nextExecution,
+                                recurring: schedule.recurring,
+                                createdBy: schedule.created_by,
+                                active: true,
+                                executionCount: schedule.execution_count + 1
+                            };
+                            
+                            db.updateScheduledReset(schedule.id, {
+                                next_execution: nextExecution,
+                                execution_count: schedule.execution_count + 1
+                            }, (err) => {
+                                if (!err) {
+                                    setResetTimer(updatedSchedule);
+                                    restoredCount++;
+                                }
+                            });
+                        } else {
+                            // 一回限りの場合は無効化
+                            db.updateScheduledReset(schedule.id, { active: 0 });
+                        }
+                    } else {
+                        // 未来のスケジュールはタイマーを再設定
+                        const scheduleData = {
+                            id: schedule.id,
+                            guildId: schedule.guild_id,
+                            originalDatetime: schedule.original_datetime,
+                            nextExecution: schedule.next_execution,
+                            recurring: schedule.recurring,
+                            createdBy: schedule.created_by,
+                            active: schedule.active,
+                            executionCount: schedule.execution_count
+                        };
+                        
+                        setResetTimer(scheduleData);
+                        restoredCount++;
+                    }
+                }
+                
+                if (restoredCount > 0) {
+                    console.log(`${guild.name}: ${restoredCount}個のスケジュールを復旧しました`);
+                }
+            });
+        }
+        
+        console.log('スケジュールリセットの復旧が完了しました');
+    } catch (error) {
+        console.error('スケジュールリセット復旧エラー:', error);
+    }
+}
 
 client.login(token);
