@@ -179,6 +179,11 @@ async function registerCommands() {
 // ボイス状態更新イベント
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     if (newState && oldState) {
+        // BOTは通話時間計測対象から除外
+        if (newState.member.user.bot || oldState.member.user.bot) {
+            return;
+        }
+        
         const guildId = newState.guild.id;
         const userId = newState.member.id;
         const currentTime = Date.now();
@@ -267,12 +272,14 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 async function checkRoleRewards(guild, userId) {
     const guildId = guild.id;
     
+    // BOTはロール報酬対象から除外
+    const member = guild.members.cache.get(userId);
+    if (!member || member.user.bot) return;
+    
     db.getVoiceTime(guildId, userId, (err, voiceData) => {
         if (err || !voiceData) return;
         
         const totalHours = voiceData.total_time / (1000 * 60 * 60);
-        const member = guild.members.cache.get(userId);
-        if (!member) return;
         
         db.getRoleRewards(guildId, async (err, roleRewards) => {
             if (err || !roleRewards) return;
