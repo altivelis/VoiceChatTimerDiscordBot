@@ -813,6 +813,9 @@ async function executeScheduledReset(scheduleData) {
         // リセット前のランキングを保存・表示
         await showFinalRanking(guild, scheduleData);
 
+        // ロール報酬を剥奪
+        await removeRoleRewards(guild);
+
         // データリセット実行
         db.resetGuildData(scheduleData.guildId, () => {
             // 現在のセッションもリセット
@@ -889,6 +892,48 @@ function calculateNextExecution(originalDatetime, recurring) {
 
     // UTC時間に変換（-9時間）
     return nextDate.getTime() - (9 * 60 * 60 * 1000);
+}
+
+// ロール報酬剥奪処理
+async function removeRoleRewards(guild) {
+    try {
+        console.log(`${guild.name} でロール報酬の剥奪を開始します`);
+        
+        // ロール報酬設定を取得
+        db.getRoleRewards(guild.id, async (err, roleRewards) => {
+            if (err || !roleRewards || roleRewards.length === 0) {
+                console.log(`${guild.name} にはロール報酬設定がありません`);
+                return;
+            }
+            
+            let removedCount = 0;
+            let errorCount = 0;
+            
+            // すべてのメンバーをチェック
+            for (const member of guild.members.cache.values()) {
+                if (member.user.bot) continue; // Botは除外
+                
+                for (const reward of roleRewards) {
+                    const role = guild.roles.cache.get(reward.role_id);
+                    if (role && member.roles.cache.has(reward.role_id)) {
+                        try {
+                            await member.roles.remove(role);
+                            console.log(`${member.displayName}から${role.name}ロールを剥奪しました`);
+                            removedCount++;
+                        } catch (error) {
+                            console.error(`ロール剥奪エラー (${member.displayName}, ${role.name}):`, error);
+                            errorCount++;
+                        }
+                    }
+                }
+            }
+            
+            console.log(`${guild.name} のロール剥奪完了: ${removedCount}個剥奪, ${errorCount}個エラー`);
+        });
+        
+    } catch (error) {
+        console.error(`ロール剥奪処理エラー (${guild.name}):`, error);
+    }
 }
 
 // リセット前最終ランキング表示
@@ -980,6 +1025,9 @@ async function handleResetTimeCommand(interaction, guildId) {
     await interaction.reply('⏳ このサーバーの通話時間をリセット中...');
     
     try {
+        // ロール報酬を剥奪
+        await removeRoleRewards(interaction.guild);
+        
         // データをリセット
         db.resetGuildData(guildId, () => {
             // 現在このサーバーでボイスチャットに参加しているユーザーのセッションをリセット
@@ -994,7 +1042,7 @@ async function handleResetTimeCommand(interaction, guildId) {
                 }
             }
             
-            interaction.editReply(`✅ ${interaction.guild.name} の通話時間リセットが完了しました。`);
+            interaction.editReply(`✅ ${interaction.guild.name} の通話時間とロール報酬のリセットが完了しました。`);
         });
         
     } catch (error) {
