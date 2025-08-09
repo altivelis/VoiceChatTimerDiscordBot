@@ -200,16 +200,26 @@ class DataMigration {
                     nextExecution: schedule.nextExecution,
                     recurring: schedule.recurring || 'none',
                     createdBy: schedule.createdBy,
+                    channelId: schedule.channelId || null, // 新フィールド追加
                     active: schedule.active !== false,
                     executionCount: schedule.executionCount || 0
+                }, (err) => {
+                    if (err) {
+                        console.error(`スケジュール移行エラー (${schedule.id}):`, err);
+                    } else {
+                        migratedSchedules++;
+                    }
                 });
-                migratedSchedules++;
             } catch (error) {
                 console.error('スケジュール移行エラー:', error);
             }
         });
 
-        console.log(`✅ ${migratedSchedules}個のスケジュールを移行しました`);
+        // 非同期処理のため少し待機
+        setTimeout(() => {
+            console.log(`✅ ${migratedSchedules}個のスケジュールを移行しました`);
+        }, 100);
+        
         return migratedSchedules;
     }
 
@@ -300,21 +310,39 @@ class DataMigration {
     verify() {
         console.log('\n🔍 移行データの確認中...');
         
-        // 基本統計を表示
-        const guilds = this.db.db.prepare('SELECT COUNT(*) as count FROM guilds').get();
-        const voiceData = this.db.db.prepare('SELECT COUNT(*) as count FROM voice_time').get();
-        const sessions = this.db.db.prepare('SELECT COUNT(*) as count FROM voice_sessions').get();
-        const rewards = this.db.db.prepare('SELECT COUNT(*) as count FROM role_rewards').get();
-        const afkChannels = this.db.db.prepare('SELECT COUNT(*) as count FROM afk_channels').get();
-        const schedules = this.db.db.prepare('SELECT COUNT(*) as count FROM scheduled_resets').get();
-
-        console.log('データベース統計:');
-        console.log(`- ギルド数: ${guilds.count}`);
-        console.log(`- 通話時間レコード数: ${voiceData.count}`);
-        console.log(`- セッション履歴数: ${sessions.count}`);
-        console.log(`- ロール報酬数: ${rewards.count}`);
-        console.log(`- AFKチャンネル数: ${afkChannels.count}`);
-        console.log(`- スケジュール数: ${schedules.count}`);
+        return new Promise((resolve) => {
+            const queries = [
+                { name: 'ギルド数', table: 'guilds' },
+                { name: '通話時間レコード数', table: 'voice_time' },
+                { name: 'セッション履歴数', table: 'voice_sessions' },
+                { name: 'ロール報酬数', table: 'role_rewards' },
+                { name: 'AFKチャンネル数', table: 'afk_channels' },
+                { name: 'スケジュール数', table: 'scheduled_resets' },
+                { name: 'ランキング設定数', table: 'ranking_settings' }
+            ];
+            
+            const results = {};
+            let completed = 0;
+            
+            queries.forEach(query => {
+                this.db.db.get(`SELECT COUNT(*) as count FROM ${query.table}`, (err, row) => {
+                    if (!err && row) {
+                        results[query.name] = row.count;
+                    } else {
+                        results[query.name] = 'エラー';
+                    }
+                    
+                    completed++;
+                    if (completed === queries.length) {
+                        console.log('データベース統計:');
+                        Object.entries(results).forEach(([name, count]) => {
+                            console.log(`- ${name}: ${count}`);
+                        });
+                        resolve();
+                    }
+                });
+            });
+        });
     }
 
     // クリーンアップ
@@ -328,9 +356,9 @@ if (require.main === module) {
     const migration = new DataMigration();
     
     migration.migrate()
-        .then(success => {
+        .then(async success => {
             if (success) {
-                migration.verify();
+                await migration.verify();
                 console.log('\n✅ 移行が正常に完了しました！');
             } else {
                 console.log('\n❌ 移行に失敗しました。');
