@@ -668,6 +668,7 @@ async function handleScheduleResetAdd(interaction, guildId) {
             nextExecution: nextExecution,
             recurring: recurring,
             createdBy: interaction.user.id,
+            channelId: interaction.channel.id,
             active: true,
             executionCount: 0
         };
@@ -936,10 +937,24 @@ async function showFinalRanking(guild, scheduleData) {
                 .setColor(0xFFD700)
                 .setFooter({ text: `リセット実行: ${formatJSTDate()} JST` });
 
-            // 一般チャンネル（最初に見つかるテキストチャンネル）に投稿
-            const channel = guild.channels.cache.find(ch => ch.isTextBased() && ch.permissionsFor(guild.members.me).has('SendMessages'));
+            // コマンドが実行されたチャンネルに投稿（フォールバック付き）
+            let channel = null;
+            
+            // 保存されたチャンネルIDから取得を試行
+            if (scheduleData.channelId) {
+                channel = guild.channels.cache.get(scheduleData.channelId);
+            }
+            
+            // チャンネルが見つからない場合はフォールバック
+            if (!channel || !channel.isTextBased() || !channel.permissionsFor(guild.members.me).has('SendMessages')) {
+                channel = guild.channels.cache.find(ch => ch.isTextBased() && ch.permissionsFor(guild.members.me).has('SendMessages'));
+            }
+            
             if (channel) {
                 await channel.send({ embeds: [embed] });
+                console.log(`${guild.name} の最終ランキングを ${channel.name} に投稿しました`);
+            } else {
+                console.log(`${guild.name} でメッセージ送信可能なチャンネルが見つかりませんでした`);
             }
         });
     } catch (error) {

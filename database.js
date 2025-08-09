@@ -76,6 +76,7 @@ class VoiceTimerDB {
                 next_execution INTEGER NOT NULL,
                 recurring TEXT NOT NULL DEFAULT 'none',
                 created_by TEXT NOT NULL,
+                channel_id TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 active BOOLEAN DEFAULT 1,
                 execution_count INTEGER DEFAULT 0
@@ -256,8 +257,8 @@ class VoiceTimerDB {
         this.ensureGuild(scheduleData.guildId, () => {
             this.db.run(
                 `INSERT INTO scheduled_resets 
-                 (id, guild_id, original_datetime, next_execution, recurring, created_by, active, execution_count)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                 (id, guild_id, original_datetime, next_execution, recurring, created_by, channel_id, active, execution_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     scheduleData.id,
                     scheduleData.guildId,
@@ -265,6 +266,7 @@ class VoiceTimerDB {
                     scheduleData.nextExecution,
                     scheduleData.recurring,
                     scheduleData.createdBy,
+                    scheduleData.channelId,
                     scheduleData.active ? 1 : 0,
                     scheduleData.executionCount
                 ],
