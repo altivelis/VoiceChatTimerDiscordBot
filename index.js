@@ -274,8 +274,16 @@ async function checkRoleRewards(guild, userId) {
     const guildId = guild.id;
     
     try {
-        // BOTはロール報酬対象から除外
-        const member = await guild.members.fetch(userId);
+        // BOTはロール報酬対象から除外 - cache優先でfetch
+        let member = guild.members.cache.get(userId);
+        if (!member) {
+            try {
+                member = await guild.members.fetch(userId);
+            } catch (error) {
+                console.warn(`メンバー取得失敗: ${userId}`, error);
+                return;
+            }
+        }
         if (!member || member.user.bot) return;
         
         db.getVoiceTime(guildId, userId, (err, voiceData) => {
@@ -526,8 +534,16 @@ async function handleRankingCommand(interaction, guildId) {
             
             // 現在のセッション時間も含めて表示
             try {
-                // メンバー情報を取得
-                const members = await interaction.guild.members.fetch();
+                // cache優先でメンバー情報を取得
+                let members = interaction.guild.members.cache;
+                if (members.size === 0) {
+                    try {
+                        members = await interaction.guild.members.fetch();
+                    } catch (error) {
+                        console.warn('全メンバー取得失敗、cacheを使用', error);
+                        members = interaction.guild.members.cache;
+                    }
+                }
                 
                 const enrichedRankings = rankings.map(ranking => {
                     const sessionKey = `${guildId}_${ranking.user_id}`;
@@ -930,8 +946,16 @@ async function removeRoleRewards(guild) {
             let errorCount = 0;
             
             try {
-                // すべてのメンバーを取得
-                const members = await guild.members.fetch();
+                // cache優先でメンバーを取得
+                let members = guild.members.cache;
+                if (members.size === 0) {
+                    try {
+                        members = await guild.members.fetch();
+                    } catch (error) {
+                        console.warn('全メンバー取得失敗、cacheを使用', error);
+                        members = guild.members.cache;
+                    }
+                }
                 
                 // すべてのメンバーをチェック
                 for (const member of members.values()) {
@@ -972,8 +996,16 @@ async function showFinalRanking(guild, scheduleData) {
             }
 
             try {
-                // メンバー情報を取得
-                const members = await guild.members.fetch();
+                // cache優先でメンバー情報を取得
+                let members = guild.members.cache;
+                if (members.size === 0) {
+                    try {
+                        members = await guild.members.fetch();
+                    } catch (error) {
+                        console.warn('全メンバー取得失敗、cacheを使用', error);
+                        members = guild.members.cache;
+                    }
+                }
                 
                 const enrichedRankings = rankings.map(ranking => {
                     const sessionKey = `${scheduleData.guildId}_${ranking.user_id}`;
@@ -1140,11 +1172,14 @@ async function handleButtonInteraction(interaction) {
                             totalTime += Date.now() - session.startTime;
                         }
                         
-                        let member;
-                        try {
-                            member = await interaction.guild.members.fetch(ranking.user_id);
-                        } catch (error) {
-                            member = null;
+                        // cache優先で個別メンバー取得
+                        let member = interaction.guild.members.cache.get(ranking.user_id);
+                        if (!member) {
+                            try {
+                                member = await interaction.guild.members.fetch(ranking.user_id);
+                            } catch (error) {
+                                member = null;
+                            }
                         }
                         
                         return {
