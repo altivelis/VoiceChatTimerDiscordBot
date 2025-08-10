@@ -272,36 +272,40 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 async function checkRoleRewards(guild, userId) {
     const guildId = guild.id;
     
-    // BOTはロール報酬対象から除外
-    const member = guild.members.cache.get(userId);
-    if (!member || member.user.bot) return;
-    
-    db.getVoiceTime(guildId, userId, (err, voiceData) => {
-        if (err || !voiceData) return;
+    try {
+        // BOTはロール報酬対象から除外
+        const member = await guild.members.fetch(userId);
+        if (!member || member.user.bot) return;
         
-        const totalHours = voiceData.total_time / (1000 * 60 * 60);
-        
-        db.getRoleRewards(guildId, async (err, roleRewards) => {
-            if (err || !roleRewards) return;
+        db.getVoiceTime(guildId, userId, (err, voiceData) => {
+            if (err || !voiceData) return;
             
-            for (const reward of roleRewards) {
-                if (totalHours >= reward.hours) {
-                    const role = guild.roles.cache.get(reward.role_id);
-                    if (role && !member.roles.cache.has(reward.role_id)) {
-                        try {
-                            await member.roles.add(role);
-                            console.log(`${member.displayName}に${role.name}ロールを付与しました (${guild.name})`);
-                            
-                            // DMで通知を送信
-                            await sendRoleRewardNotification(member, role, totalHours, guild);
-                        } catch (error) {
-                            console.error(`ロール付与エラー (${member.displayName}):`, error);
+            const totalHours = voiceData.total_time / (1000 * 60 * 60);
+            
+            db.getRoleRewards(guildId, async (err, roleRewards) => {
+                if (err || !roleRewards) return;
+                
+                for (const reward of roleRewards) {
+                    if (totalHours >= reward.hours) {
+                        const role = guild.roles.cache.get(reward.role_id);
+                        if (role && !member.roles.cache.has(reward.role_id)) {
+                            try {
+                                await member.roles.add(role);
+                                console.log(`${member.displayName}に${role.name}ロールを付与しました (${guild.name})`);
+                                
+                                // DMで通知を送信
+                                await sendRoleRewardNotification(member, role, totalHours, guild);
+                            } catch (error) {
+                                console.error(`ロール付与エラー (${member.displayName}):`, error);
+                            }
                         }
                     }
                 }
-            }
+            });
         });
-    });
+    } catch (fetchError) {
+        console.error(`メンバー取得エラー (userId: ${userId}):`, fetchError);
+    }
 }
 
 // ロール報酬通知DM送信関数
@@ -520,70 +524,78 @@ async function handleRankingCommand(interaction, guildId) {
             }
             
             // 現在のセッション時間も含めて表示
-            const enrichedRankings = rankings.map(ranking => {
-                const sessionKey = `${guildId}_${ranking.user_id}`;
-                let totalTime = ranking.total_time;
+            try {
+                // メンバー情報を取得
+                const members = await interaction.guild.members.fetch();
                 
-                if (userSessions.has(sessionKey)) {
-                    const session = userSessions.get(sessionKey);
-                    totalTime += Date.now() - session.startTime;
+                const enrichedRankings = rankings.map(ranking => {
+                    const sessionKey = `${guildId}_${ranking.user_id}`;
+                    let totalTime = ranking.total_time;
+                    
+                    if (userSessions.has(sessionKey)) {
+                        const session = userSessions.get(sessionKey);
+                        totalTime += Date.now() - session.startTime;
+                    }
+                    
+                    const member = members.get(ranking.user_id);
+                    return {
+                        userId: ranking.user_id,
+                        displayName: member?.displayName || '不明なユーザー',
+                        totalTime: totalTime
+                    };
+                });
+                
+                // 現在のセッション時間を含めて再ソート
+                enrichedRankings.sort((a, b) => b.totalTime - a.totalTime);
+                
+                const description = enrichedRankings
+                    .map((user, index) => {
+                        const rank = offset + index + 1;
+                        let rankEmoji = '';
+                        if (rank === 1) rankEmoji = '🥇';
+                        else if (rank === 2) rankEmoji = '🥈';
+                        else if (rank === 3) rankEmoji = '🥉';
+                        else rankEmoji = '   ';
+                        
+                        return `${rankEmoji} **${rank}位** ${user.displayName} - ${formatTime(user.totalTime)}`;
+                    })
+                    .join('\n');
+                
+                const embed = new EmbedBuilder()
+                    .setTitle(`🏆 ${interaction.guild.name} の通話時間ランキング`)
+                    .setDescription(description)
+                    .setColor(0xFFD700)
+                    .setFooter({ text: `ページ ${page}/${totalPages} | 総ユーザー数: ${totalCount} | ${formatJSTDate()} JST` });
+                
+                // ページネーションボタン
+                const row = new ActionRowBuilder();
+                if (page > 1) {
+                    row.addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`ranking_${guildId}_${page - 1}`)
+                            .setLabel('前のページ')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                }
+                if (page < totalPages) {
+                    row.addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`ranking_${guildId}_${page + 1}`)
+                            .setLabel('次のページ')
+                            .setStyle(ButtonStyle.Primary)
+                    );
                 }
                 
-                const member = interaction.guild.members.cache.get(ranking.user_id);
-                return {
-                    userId: ranking.user_id,
-                    displayName: member?.displayName || '不明なユーザー',
-                    totalTime: totalTime
-                };
-            });
-            
-            // 現在のセッション時間を含めて再ソート
-            enrichedRankings.sort((a, b) => b.totalTime - a.totalTime);
-            
-            const description = enrichedRankings
-                .map((user, index) => {
-                    const rank = offset + index + 1;
-                    let rankEmoji = '';
-                    if (rank === 1) rankEmoji = '🥇';
-                    else if (rank === 2) rankEmoji = '🥈';
-                    else if (rank === 3) rankEmoji = '🥉';
-                    else rankEmoji = '   ';
-                    
-                    return `${rankEmoji} **${rank}位** ${user.displayName} - ${formatTime(user.totalTime)}`;
-                })
-                .join('\n');
-            
-            const embed = new EmbedBuilder()
-                .setTitle(`🏆 ${interaction.guild.name} の通話時間ランキング`)
-                .setDescription(description)
-                .setColor(0xFFD700)
-                .setFooter({ text: `ページ ${page}/${totalPages} | 総ユーザー数: ${totalCount} | ${formatJSTDate()} JST` });
-            
-            // ページネーションボタン
-            const row = new ActionRowBuilder();
-            if (page > 1) {
-                row.addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`ranking_${guildId}_${page - 1}`)
-                        .setLabel('前のページ')
-                        .setStyle(ButtonStyle.Primary)
-                );
+                const reply = { embeds: [embed] };
+                if (row.components.length > 0) {
+                    reply.components = [row];
+                }
+                
+                await interaction.reply(reply);
+            } catch (fetchError) {
+                console.error('メンバー取得エラー:', fetchError);
+                await interaction.reply('ランキングの取得に失敗しました。');
             }
-            if (page < totalPages) {
-                row.addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`ranking_${guildId}_${page + 1}`)
-                        .setLabel('次のページ')
-                        .setStyle(ButtonStyle.Primary)
-                );
-            }
-            
-            const reply = { embeds: [embed] };
-            if (row.components.length > 0) {
-                reply.components = [row];
-            }
-            
-            await interaction.reply(reply);
         });
     });
 }
@@ -916,26 +928,33 @@ async function removeRoleRewards(guild) {
             let removedCount = 0;
             let errorCount = 0;
             
-            // すべてのメンバーをチェック
-            for (const member of guild.members.cache.values()) {
-                if (member.user.bot) continue; // Botは除外
+            try {
+                // すべてのメンバーを取得
+                const members = await guild.members.fetch();
                 
-                for (const reward of roleRewards) {
-                    const role = guild.roles.cache.get(reward.role_id);
-                    if (role && member.roles.cache.has(reward.role_id)) {
-                        try {
-                            await member.roles.remove(role);
-                            console.log(`${member.displayName}から${role.name}ロールを剥奪しました`);
-                            removedCount++;
-                        } catch (error) {
-                            console.error(`ロール剥奪エラー (${member.displayName}, ${role.name}):`, error);
-                            errorCount++;
+                // すべてのメンバーをチェック
+                for (const member of members.values()) {
+                    if (member.user.bot) continue; // Botは除外
+                    
+                    for (const reward of roleRewards) {
+                        const role = guild.roles.cache.get(reward.role_id);
+                        if (role && member.roles.cache.has(reward.role_id)) {
+                            try {
+                                await member.roles.remove(role);
+                                console.log(`${member.displayName}から${role.name}ロールを剥奪しました`);
+                                removedCount++;
+                            } catch (error) {
+                                console.error(`ロール剥奪エラー (${member.displayName}, ${role.name}):`, error);
+                                errorCount++;
+                            }
                         }
                     }
                 }
+                
+                console.log(`${guild.name} のロール剥奪完了: ${removedCount}個剥奪, ${errorCount}個エラー`);
+            } catch (fetchError) {
+                console.error(`メンバー取得エラー (${guild.name}):`, fetchError);
             }
-            
-            console.log(`${guild.name} のロール剥奪完了: ${removedCount}個剥奪, ${errorCount}個エラー`);
         });
         
     } catch (error) {
@@ -951,62 +970,69 @@ async function showFinalRanking(guild, scheduleData) {
                 return; // ランキングデータがない場合は何もしない
             }
 
-            const enrichedRankings = rankings.map(ranking => {
-                const sessionKey = `${scheduleData.guildId}_${ranking.user_id}`;
-                let totalTime = ranking.total_time;
+            try {
+                // メンバー情報を取得
+                const members = await guild.members.fetch();
                 
-                if (userSessions.has(sessionKey)) {
-                    const session = userSessions.get(sessionKey);
-                    totalTime += Date.now() - session.startTime;
+                const enrichedRankings = rankings.map(ranking => {
+                    const sessionKey = `${scheduleData.guildId}_${ranking.user_id}`;
+                    let totalTime = ranking.total_time;
+                    
+                    if (userSessions.has(sessionKey)) {
+                        const session = userSessions.get(sessionKey);
+                        totalTime += Date.now() - session.startTime;
+                    }
+                    
+                    const member = members.get(ranking.user_id);
+                    return {
+                        userId: ranking.user_id,
+                        displayName: member?.displayName || '不明なユーザー',
+                        totalTime: totalTime
+                    };
+                });
+
+                enrichedRankings.sort((a, b) => b.totalTime - a.totalTime);
+
+                const description = enrichedRankings
+                    .map((user, index) => {
+                        const rank = index + 1;
+                        let rankEmoji = '';
+                        if (rank === 1) rankEmoji = '🥇';
+                        else if (rank === 2) rankEmoji = '🥈';
+                        else if (rank === 3) rankEmoji = '🥉';
+                        else rankEmoji = '   ';
+                        
+                        return `${rankEmoji} **${rank}位** ${user.displayName} - ${formatTime(user.totalTime)}`;
+                    })
+                    .join('\n');
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`🏆 ${guild.name} 最終ランキング（リセット前）`)
+                    .setDescription(description)
+                    .setColor(0xFFD700)
+                    .setFooter({ text: `リセット実行: ${formatJSTDate()} JST` });
+
+                // コマンドが実行されたチャンネルに投稿（フォールバック付き）
+                let channel = null;
+                
+                // 保存されたチャンネルIDから取得を試行
+                if (scheduleData.channelId) {
+                    channel = guild.channels.cache.get(scheduleData.channelId);
                 }
                 
-                const member = guild.members.cache.get(ranking.user_id);
-                return {
-                    userId: ranking.user_id,
-                    displayName: member?.displayName || '不明なユーザー',
-                    totalTime: totalTime
-                };
-            });
-
-            enrichedRankings.sort((a, b) => b.totalTime - a.totalTime);
-
-            const description = enrichedRankings
-                .map((user, index) => {
-                    const rank = index + 1;
-                    let rankEmoji = '';
-                    if (rank === 1) rankEmoji = '🥇';
-                    else if (rank === 2) rankEmoji = '🥈';
-                    else if (rank === 3) rankEmoji = '🥉';
-                    else rankEmoji = '   ';
-                    
-                    return `${rankEmoji} **${rank}位** ${user.displayName} - ${formatTime(user.totalTime)}`;
-                })
-                .join('\n');
-
-            const embed = new EmbedBuilder()
-                .setTitle(`🏆 ${guild.name} 最終ランキング（リセット前）`)
-                .setDescription(description)
-                .setColor(0xFFD700)
-                .setFooter({ text: `リセット実行: ${formatJSTDate()} JST` });
-
-            // コマンドが実行されたチャンネルに投稿（フォールバック付き）
-            let channel = null;
-            
-            // 保存されたチャンネルIDから取得を試行
-            if (scheduleData.channelId) {
-                channel = guild.channels.cache.get(scheduleData.channelId);
-            }
-            
-            // チャンネルが見つからない場合はフォールバック
-            if (!channel || !channel.isTextBased() || !channel.permissionsFor(guild.members.me).has('SendMessages')) {
-                channel = guild.channels.cache.find(ch => ch.isTextBased() && ch.permissionsFor(guild.members.me).has('SendMessages'));
-            }
-            
-            if (channel) {
-                await channel.send({ embeds: [embed] });
-                console.log(`${guild.name} の最終ランキングを ${channel.name} に投稿しました`);
-            } else {
-                console.log(`${guild.name} でメッセージ送信可能なチャンネルが見つかりませんでした`);
+                // チャンネルが見つからない場合はフォールバック
+                if (!channel || !channel.isTextBased() || !channel.permissionsFor(guild.members.me).has('SendMessages')) {
+                    channel = guild.channels.cache.find(ch => ch.isTextBased() && ch.permissionsFor(guild.members.me).has('SendMessages'));
+                }
+                
+                if (channel) {
+                    await channel.send({ embeds: [embed] });
+                    console.log(`${guild.name} の最終ランキングを ${channel.name} に投稿しました`);
+                } else {
+                    console.log(`${guild.name} でメッセージ送信可能なチャンネルが見つかりませんでした`);
+                }
+            } catch (fetchError) {
+                console.error('メンバー取得エラー:', fetchError);
             }
         });
     } catch (error) {
@@ -1104,7 +1130,7 @@ async function handleButtonInteraction(interaction) {
                         });
                     }
                     
-                    const enrichedRankings = rankings.map(ranking => {
+                    const enrichedRankings = await Promise.all(rankings.map(async ranking => {
                         const sessionKey = `${guildId}_${ranking.user_id}`;
                         let totalTime = ranking.total_time;
                         
@@ -1113,13 +1139,19 @@ async function handleButtonInteraction(interaction) {
                             totalTime += Date.now() - session.startTime;
                         }
                         
-                        const member = interaction.guild.members.cache.get(ranking.user_id);
+                        let member;
+                        try {
+                            member = await interaction.guild.members.fetch(ranking.user_id);
+                        } catch (error) {
+                            member = null;
+                        }
+                        
                         return {
                             userId: ranking.user_id,
                             displayName: member?.displayName || '不明なユーザー',
                             totalTime: totalTime
                         };
-                    });
+                    }));
                     
                     enrichedRankings.sort((a, b) => b.totalTime - a.totalTime);
                     
