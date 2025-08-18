@@ -997,14 +997,9 @@ async function showFinalRanking(guild, scheduleData) {
 
             try {
                 // cache優先でメンバー情報を取得
-                let members = guild.members.cache;
+                let members = await guild.members.fetch();
                 if (members.size === 0) {
-                    try {
-                        members = await guild.members.fetch();
-                    } catch (error) {
-                        console.warn('全メンバー取得失敗、cacheを使用', error);
-                        members = guild.members.cache;
-                    }
+                    members = guild.members.cache;
                 }
                 
                 const enrichedRankings = rankings.map(ranking => {
@@ -1050,7 +1045,7 @@ async function showFinalRanking(guild, scheduleData) {
                 
                 // 保存されたチャンネルIDから取得を試行
                 if (scheduleData.channelId) {
-                    channel = guild.channels.cache.get(scheduleData.channelId);
+                    channel = await guild.channels.fetch(scheduleData.channelId);
                 }
                 
                 // チャンネルが見つからない場合はフォールバック
