@@ -24,6 +24,13 @@ const userSessions = new Map();
 // アクティブなタイマーを管理
 const activeTimers = new Map();
 
+// 実行中のスケジュールを管理（重複実行防止）
+const executingSchedules = new Set();
+
+// スケジュール実行回数制限（フェイルセーフ）
+const MAX_EXECUTION_COUNT_PER_DAY = 24; // 1日最大24回まで
+const scheduleExecutionHistory = new Map(); // scheduleId -> { count: number, lastResetDate: string }
+
 // AFKチャンネルのキャッシュ
 const afkChannelsCache = new Map();
 
@@ -837,10 +844,19 @@ function clearResetTimer(scheduleId) {
 
 // スケジュールリセット実行
 async function executeScheduledReset(scheduleData) {
+    // 重複実行防止
+    if (executingSchedules.has(scheduleData.id)) {
+        console.log(`スケジュール ${scheduleData.id} は既に実行中です`);
+        return;
+    }
+
+    executingSchedules.add(scheduleData.id);
+    
     try {
         const guild = client.guilds.cache.get(scheduleData.guildId);
         if (!guild) {
             console.error(`ギルド ${scheduleData.guildId} が見つかりません`);
+            executingSchedules.delete(scheduleData.id);
             return;
         }
 
@@ -893,6 +909,10 @@ async function executeScheduledReset(scheduleData) {
 
     } catch (error) {
         console.error('スケジュールリセット実行エラー:', error);
+    } finally {
+        // 実行完了時にフラグを削除
+        executingSchedules.delete(scheduleData.id);
+        console.log(`スケジュール ${scheduleData.id} の実行が完了しました`);
     }
 }
 
@@ -997,9 +1017,14 @@ async function showFinalRanking(guild, scheduleData) {
 
             try {
                 // cache優先でメンバー情報を取得
-                let members = await guild.members.fetch();
+                let members = guild.members.cache;
                 if (members.size === 0) {
-                    members = guild.members.cache;
+                    try {
+                        members = await guild.members.fetch();
+                    } catch (error) {
+                        console.warn('全メンバー取得失敗、cacheを使用', error);
+                        members = guild.members.cache;
+                    }
                 }
                 
                 const enrichedRankings = rankings.map(ranking => {
@@ -1298,34 +1323,40 @@ async function restoreScheduledResets() {
                 let restoredCount = 0;
                 
                 for (const schedule of schedules) {
-                    // 過去のスケジュールは実行済みとして処理
+                    // 過去のスケジュールは安全に処理（段階的復旧）
                     if (schedule.next_execution <= now) {
                         if (schedule.recurring !== 'none') {
                             // 定期実行の場合は次回実行日時を計算
                             const nextExecution = calculateNextExecution(schedule.original_datetime, schedule.recurring);
+                            // 最低10秒後に設定して即座実行を防止
+                            const safeNextExecution = Math.max(nextExecution, now + 10000);
+                            
                             const updatedSchedule = {
                                 id: schedule.id,
                                 guildId: schedule.guild_id,
                                 originalDatetime: schedule.original_datetime,
-                                nextExecution: nextExecution,
+                                nextExecution: safeNextExecution,
                                 recurring: schedule.recurring,
                                 createdBy: schedule.created_by,
+                                channelId: schedule.channel_id,
                                 active: true,
                                 executionCount: schedule.execution_count + 1
                             };
                             
                             db.updateScheduledReset(schedule.id, {
-                                next_execution: nextExecution,
+                                next_execution: safeNextExecution,
                                 execution_count: schedule.execution_count + 1
                             }, (err) => {
                                 if (!err) {
                                     setResetTimer(updatedSchedule);
                                     restoredCount++;
+                                    console.log(`スケジュール ${schedule.id} を安全に復旧しました (${formatTime(safeNextExecution - now)}後実行)`);
                                 }
                             });
                         } else {
                             // 一回限りの場合は無効化
                             db.updateScheduledReset(schedule.id, { active: 0 });
+                            console.log(`期限切れスケジュール ${schedule.id} を無効化しました`);
                         }
                     } else {
                         // 未来のスケジュールはタイマーを再設定
@@ -1336,12 +1367,14 @@ async function restoreScheduledResets() {
                             nextExecution: schedule.next_execution,
                             recurring: schedule.recurring,
                             createdBy: schedule.created_by,
+                            channelId: schedule.channel_id,
                             active: schedule.active,
                             executionCount: schedule.execution_count
                         };
                         
                         setResetTimer(scheduleData);
                         restoredCount++;
+                        console.log(`スケジュール ${schedule.id} を復旧しました (${formatTime(schedule.next_execution - now)}後実行)`);
                     }
                 }
                 
